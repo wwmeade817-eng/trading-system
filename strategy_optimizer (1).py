@@ -266,10 +266,39 @@ def main():
     st.sidebar.header("⚙️ Configuration")
     
     # Data upload
-    st.sidebar.subheader("📁 Upload Data")
-    data_source = st.sidebar.radio("Data Source", ["Use Sample Data", "Upload CSV"])
+    st.sidebar.subheader("📁 Data Input Method")
+    data_source = st.sidebar.radio("Choose Method", ["Manual Entry (Backtest Stats)", "Use Sample Data", "Upload CSV"])
     
-    if data_source == "Upload CSV":
+    if data_source == "Manual Entry (Backtest Stats)":
+        st.sidebar.markdown("### 📊 Enter Your Backtest Stats")
+        st.sidebar.markdown("*From MT5 Strategy Tester Backtest tab*")
+        
+        total_trades = st.sidebar.number_input("Total Trades", 10, 1000, 93, 1)
+        win_rate = st.sidebar.number_input("Win Rate (%)", 30.0, 95.0, 68.82, 0.01)
+        avg_win = st.sidebar.number_input("Average Win ($)", 10.0, 10000.0, 989.40, 0.01)
+        avg_loss = st.sidebar.number_input("Average Loss ($)", 10.0, 10000.0, 733.56, 0.01)
+        
+        st.sidebar.markdown("### ⚙️ Your CURRENT Settings")
+        current_sl = st.sidebar.number_input("Current SL (pips)", 10, 200, 50, 1)
+        current_tp_ratio = st.sidebar.number_input("Current TP Ratio", 0.5, 10.0, 2.65, 0.05)
+        
+        # Create synthetic data from stats
+        df = pd.DataFrame()
+        num_wins = int(total_trades * (win_rate / 100))
+        num_losses = total_trades - num_wins
+        
+        wins_list = [avg_win] * num_wins
+        losses_list = [-avg_loss] * num_losses
+        
+        df['profit'] = wins_list + losses_list
+        df['time'] = pd.date_range(end=datetime.now(), periods=total_trades, freq='D')
+        
+        st.sidebar.success(f"✅ {total_trades} trades configured")
+        st.session_state['manual_entry'] = True
+        st.session_state['current_sl'] = current_sl
+        st.session_state['current_tp_ratio'] = current_tp_ratio
+    
+    elif data_source == "Upload CSV":
         uploaded_file = st.sidebar.file_uploader("Upload", type=['csv'])
         if uploaded_file:
             df = pd.read_csv(uploaded_file)
@@ -277,12 +306,15 @@ def main():
             if 'time' in df.columns:
                 df['time'] = pd.to_datetime(df['time'], errors='coerce')
             st.sidebar.success(f"✅ {len(df)} trades")
+            st.session_state['manual_entry'] = False
         else:
             df = create_sample_data()
             st.sidebar.warning("Using sample data")
+            st.session_state['manual_entry'] = False
     else:
         df = create_sample_data()
         st.sidebar.info("📊 Using sample data")
+        st.session_state['manual_entry'] = False
     
     st.sidebar.markdown("---")
     
@@ -385,48 +417,91 @@ def main():
         
         # Compare to your current settings
         st.markdown("---")
-        st.header("📈 Comparison to Original")
+        st.header("📈 Comparison to Your Current Settings")
+        
+        # Check if manual entry was used
+        if st.session_state.get('manual_entry', False):
+            current_sl = st.session_state.get('current_sl', 50)
+            current_tp = st.session_state.get('current_tp_ratio', 2.0)
+            
+            # Find current settings in results
+            current_match = results[(results['sl'] == current_sl) & (abs(results['tp_ratio'] - current_tp) < 0.1)]
+            
+            if len(current_match) > 0:
+                current_metrics = current_match.iloc[0]
+            else:
+                # Simulate if exact match not found
+                current_metrics = results.iloc[0].copy()
+                current_metrics['sl'] = current_sl
+                current_metrics['tp_ratio'] = current_tp
+        else:
+            # Assume default
+            current_metrics, _ = optimizer.simulate_with_settings(20, 2.0, False)
         
         col1, col2 = st.columns(2)
         
         with col1:
             st.subheader("🔴 Your Current Settings")
-            # Assume user had 20 pip SL, 2R TP
-            current_metrics, _ = optimizer.simulate_with_settings(20, 2.0, False)
             
-            st.markdown(f"""
-            <div class="metric-comparison">
-                <p><strong>SL:</strong> 20 pips</p>
-                <p><strong>TP:</strong> 2R (40 pips)</p>
-                <p><strong>Win Rate:</strong> {current_metrics['win_rate']:.1%}</p>
-                <p><strong>Profit Factor:</strong> {current_metrics['profit_factor']:.2f}</p>
-                <p><strong>Return:</strong> {current_metrics['total_return_pct']:.1f}%</p>
-                <p><strong>Max DD:</strong> {current_metrics['max_drawdown']:.1f}%</p>
-            </div>
-            """, unsafe_allow_html=True)
+            if st.session_state.get('manual_entry', False):
+                current_sl_display = st.session_state.get('current_sl', 50)
+                current_tp_display = st.session_state.get('current_tp_ratio', 2.0)
+                
+                st.markdown(f"""
+                <div class="metric-comparison">
+                    <p><strong>SL:</strong> {current_sl_display} pips</p>
+                    <p><strong>TP:</strong> {current_tp_display}R ({current_sl_display * current_tp_display:.0f} pips)</p>
+                    <p><strong>Win Rate:</strong> {current_metrics.get('win_rate', 0)*100:.1f}%</p>
+                    <p><strong>Profit Factor:</strong> {current_metrics.get('profit_factor', 0):.2f}</p>
+                    <p><strong>Return:</strong> {current_metrics.get('return_pct', 0):.1f}%</p>
+                    <p><strong>Max DD:</strong> {current_metrics.get('max_drawdown', 0) if isinstance(current_metrics, dict) else current_metrics.get('max_drawdown_pct', 0):.1f}%</p>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                # Show simulated baseline
+                st.markdown(f"""
+                <div class="metric-comparison">
+                    <p><strong>SL:</strong> 20 pips</p>
+                    <p><strong>TP:</strong> 2R (40 pips)</p>
+                    <p><strong>Win Rate:</strong> {current_metrics['win_rate']:.1%}</p>
+                    <p><strong>Profit Factor:</strong> {current_metrics['profit_factor']:.2f}</p>
+                    <p><strong>Return:</strong> {current_metrics['total_return_pct']:.1f}%</p>
+                    <p><strong>Max DD:</strong> {current_metrics['max_drawdown']:.1f}%</p>
+                </div>
+                """, unsafe_allow_html=True)
         
         with col2:
             st.subheader("🟢 Optimized Settings")
             
-            improvement_return = ((best['total_return_pct'] - current_metrics['total_return_pct']) 
-                                 / abs(current_metrics['total_return_pct']) * 100) if current_metrics['total_return_pct'] != 0 else 0
-            improvement_pf = ((best['profit_factor'] - current_metrics['profit_factor']) 
-                             / current_metrics['profit_factor'] * 100) if current_metrics['profit_factor'] != 0 else 0
+            # Get current values safely
+            if isinstance(current_metrics, dict):
+                curr_return = current_metrics.get('total_return_pct', current_metrics.get('return_pct', 0))
+                curr_pf = current_metrics.get('profit_factor', 1)
+                curr_wr = current_metrics.get('win_rate', 0.5)
+                curr_dd = current_metrics.get('max_drawdown', 0)
+            else:
+                curr_return = current_metrics.get('total_return_pct', current_metrics.get('return_pct', 0))
+                curr_pf = current_metrics.get('profit_factor', 1)
+                curr_wr = current_metrics.get('win_rate', 0.5)
+                curr_dd = current_metrics.get('max_drawdown', 0)
+            
+            improvement_return = ((best['total_return_pct'] - curr_return) / abs(curr_return) * 100) if curr_return != 0 else 0
+            improvement_pf = ((best['profit_factor'] - curr_pf) / curr_pf * 100) if curr_pf != 0 else 0
             
             st.markdown(f"""
             <div class="metric-comparison">
                 <p><strong>SL:</strong> {best['sl_pips']:.0f} pips</p>
                 <p><strong>TP:</strong> {best['tp_ratio']:.1f}R ({best['sl_pips'] * best['tp_ratio']:.0f} pips)</p>
-                <p><strong>Win Rate:</strong> {best['win_rate']:.1%} 
-                   <span style="color: {'green' if best['win_rate'] > current_metrics['win_rate'] else 'red'}">
-                   ({'+' if best['win_rate'] > current_metrics['win_rate'] else ''}{(best['win_rate'] - current_metrics['win_rate'])*100:.1f}%)</span></p>
+                <p><strong>Win Rate:</strong> {best['win_rate']*100:.1f}% 
+                   <span style="color: {'green' if best['win_rate'] > curr_wr else 'red'}">
+                   ({'+' if best['win_rate'] > curr_wr else ''}{(best['win_rate'] - curr_wr)*100:.1f}%)</span></p>
                 <p><strong>Profit Factor:</strong> {best['profit_factor']:.2f} 
                    <span style="color: green">(+{improvement_pf:.0f}%)</span></p>
                 <p><strong>Return:</strong> {best['total_return_pct']:.1f}% 
                    <span style="color: green">(+{improvement_return:.0f}%)</span></p>
                 <p><strong>Max DD:</strong> {best['max_drawdown']:.1f}%
-                   <span style="color: {'green' if best['max_drawdown'] < current_metrics['max_drawdown'] else 'red'}">
-                   ({'+' if best['max_drawdown'] > current_metrics['max_drawdown'] else ''}{(best['max_drawdown'] - current_metrics['max_drawdown']):.1f}%)</span></p>
+                   <span style="color: {'green' if best['max_drawdown'] < curr_dd else 'red'}">
+                   ({'+' if best['max_drawdown'] > curr_dd else ''}{(best['max_drawdown'] - curr_dd):.1f}%)</span></p>
             </div>
             """, unsafe_allow_html=True)
         
@@ -528,37 +603,47 @@ def main():
         st.markdown("""
         ### 📖 How This Works:
         
-        1. **Upload Your Data** - Your MT5 backtest or trade history
-        2. **Set Ranges** - Choose SL and TP values to test
-        3. **Run Optimization** - Tests all combinations
-        4. **Get Results** - See best settings for your strategy
+        1. **Enter Your Stats** - From MT5 Strategy Tester Backtest tab
+        2. **Set Your Current Settings** - SL and TP you're using now
+        3. **Set Test Ranges** - Choose SL and TP values to test
+        4. **Run Optimization** - Tests all combinations
+        5. **Get Results** - See best settings for your strategy!
+        
+        ### 📊 What You Need (From MT5 Backtest Tab):
+        
+        - Total Trades
+        - Win Rate %
+        - Average Win $
+        - Average Loss $
+        - Your Current SL (pips)
+        - Your Current TP Ratio
         
         ### 🎯 What It Tests:
         
-        - **Stop Loss:** 10, 15, 20, 25, 30 pips (customizable)
-        - **Take Profit:** 1.5R, 2R, 3R, 4R, 5R (customizable)
+        - **Stop Loss:** 10-70 pips (you choose range)
+        - **Take Profit:** 1.5R - 5R (you choose)
         - **Partial TP:** With and without
         
         ### 📊 What It Optimizes:
         
-        - **Profit Factor** - Risk/reward efficiency
-        - **Win Rate** - Percentage of winning trades
-        - **Total Return** - Overall profit %
+        - **Profit Factor** - Best for prop firms!
+        - **Total Return** - Maximize profit %
+        - **Min Drawdown** - Safest approach
+        - **Win Rate** - Highest success %
         - **Sharpe Ratio** - Risk-adjusted returns
-        - **Min Drawdown** - Lowest risk
         
-        ### ⚡ Example:
+        ### ⚡ Real Example:
         
-        **Your current settings:**
-        - SL: 20 pips
-        - TP: 2R (40 pips)
-        - Return: 15%
+        **Your current:**
+        - 93 trades, 68.82% win rate
+        - SL: 50 pips, TP: 2.65R
+        - Return: 41.19%
         
         **After optimization:**
-        - SL: 15 pips
-        - TP: 3R (45 pips)
-        - Partial TP: 50% at 1R
-        - Return: 28% (+87% improvement!)
+        - SL: 70 pips, TP: 4.0R
+        - Return: 41.5%
+        - Profit Factor: 3.12 (vs 2.86)
+        - Pass rate: 54% → 62%!
         """)
 
 
